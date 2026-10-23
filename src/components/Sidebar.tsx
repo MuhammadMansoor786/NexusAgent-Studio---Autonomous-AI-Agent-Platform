@@ -36,6 +36,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const getAvatarIcon = (avatarName: string, colorClass: string) => {
     const iconClass = 'w-4 h-4 text-white';
     switch (avatarName) {
+      case 'Terminal':
+        return (
+          <div className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center shadow-md`}>
+            <Terminal className={iconClass} />
+          </div>
+        );
       case 'Target':
         return (
           <div className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${colorClass} flex items-center justify-center shadow-md`}>

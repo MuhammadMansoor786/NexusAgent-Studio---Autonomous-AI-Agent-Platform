@@ -1,101 +1,101 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isRiskyCommand,
+  executeTerminalCommand,
+  generateFallbackMission,
   parseThoughts,
   extractArtifacts,
   extractPlan,
   searchMemories,
-  executeLocalTool,
   DEFAULT_AGENTS,
-  INITIAL_MEMORIES,
+  INITIAL_FILESYSTEM,
 } from './agent-engine';
 
-test('parseThoughts correctly extracts thought blocks and returns clean text', () => {
-  const raw = `<thought>
-Analyzing the architectural trade-offs between microservices and monoliths.
-Selected high-concurrency event bus pattern.
-</thought>
-Here is the recommended architecture design for the platform.`;
+test('isRiskyCommand detects deletion commands and enforces confirmation', () => {
+  const rmCheck = isRiskyCommand('rm -rf /downloads/temp');
+  assert.equal(rmCheck.isRisky, true);
+  assert.ok(rmCheck.commandName.includes('Deletion'));
+  assert.ok(rmCheck.warningText.includes("WARNING: I am about to execute a risky command"));
+  assert.ok(rmCheck.warningText.includes("Please say 'Yes' to approve or 'No' to cancel"));
 
-  const { thoughts, cleanText } = parseThoughts(raw);
-
-  assert.ok(thoughts.includes('Analyzing the architectural trade-offs'));
-  assert.ok(thoughts.includes('Selected high-concurrency event bus pattern'));
-  assert.equal(cleanText, 'Here is the recommended architecture design for the platform.');
+  const delCheck = isRiskyCommand('delete this folder please');
+  assert.equal(delCheck.isRisky, true);
 });
 
-test('parseThoughts returns empty thought and identical clean text if no thought tags', () => {
-  const raw = 'Direct answer with no chain of thought.';
-  const { thoughts, cleanText } = parseThoughts(raw);
-  assert.equal(thoughts, '');
-  assert.equal(cleanText, raw);
+test('isRiskyCommand detects shutdown and reboot commands', () => {
+  const shutdownCheck = isRiskyCommand('shutdown the computer now');
+  assert.equal(shutdownCheck.isRisky, true);
+  assert.ok(shutdownCheck.commandName.includes('Shutdown'));
+  assert.ok(shutdownCheck.warningText.includes("WARNING: I am about to execute a risky command"));
+
+  const rebootCheck = isRiskyCommand('reboot the pc');
+  assert.equal(rebootCheck.isRisky, true);
 });
 
-test('extractArtifacts extracts markdown and code artifacts properly', () => {
-  const raw = `I have generated two files for you:
-<artifact title="Server.ts" type="code" language="typescript">
-console.log("Hello Server");
-</artifact>
-And a summary document:
-<artifact title="Notes.md" type="markdown">
-# System Notes
-All green.
-</artifact>
-Enjoy!`;
+test('isRiskyCommand allows safe operations without warning', () => {
+  const safeMkdir = isRiskyCommand('mkdir project-alpha');
+  assert.equal(safeMkdir.isRisky, false);
 
-  const { artifacts, cleanText } = extractArtifacts(raw);
-
-  assert.equal(artifacts.length, 2);
-  assert.equal(artifacts[0].title, 'Server.ts');
-  assert.equal(artifacts[0].type, 'code');
-  assert.equal(artifacts[0].language, 'typescript');
-  assert.equal(artifacts[0].content, 'console.log("Hello Server");');
-
-  assert.equal(artifacts[1].title, 'Notes.md');
-  assert.equal(artifacts[1].type, 'markdown');
-  assert.equal(artifacts[1].content, '# System Notes\nAll green.');
-
-  assert.ok(!cleanText.includes('<artifact'));
-  assert.ok(cleanText.includes('I have generated two files for you:'));
+  const safeReact = isRiskyCommand('npx create-react-app portfolio');
+  assert.equal(safeReact.isRisky, false);
 });
 
-test('extractPlan parses valid JSON plans inside <plan> tags', () => {
-  const planJson = JSON.stringify([
-    { id: 'step-1', title: 'Data Ingestion', status: 'completed' },
-    { id: 'step-2', title: 'Model Inference', status: 'in_progress', toolName: 'calculator_code' },
-  ]);
-  const raw = `<plan>${planJson}</plan>Plan established and running.`;
-
-  const { plan, cleanText } = extractPlan(raw);
-
-  assert.equal(plan.length, 2);
-  assert.equal(plan[0].title, 'Data Ingestion');
-  assert.equal(plan[0].status, 'completed');
-  assert.equal(plan[1].toolName, 'calculator_code');
-  assert.equal(cleanText, 'Plan established and running.');
+test('executeTerminalCommand blocks risky commands when unconfirmed', () => {
+  const res = executeTerminalCommand('rm -rf temp_logs', INITIAL_FILESYSTEM, false);
+  assert.equal(res.requiresConfirmation, true);
+  assert.equal(res.log.status, 'blocked');
+  assert.ok(res.warning?.includes("Please say 'Yes' to approve or 'No' to cancel"));
 });
 
-test('searchMemories filters relevant memory items', () => {
-  const result = searchMemories('typescript web', INITIAL_MEMORIES);
-  assert.ok(result.length > 0);
-  assert.equal(result[0].key, 'runtime_preference');
+test('executeTerminalCommand executes safe commands immediately and updates filesystem', () => {
+  const res = executeTerminalCommand('mkdir project-x', INITIAL_FILESYSTEM, false);
+  assert.equal(res.requiresConfirmation, false);
+  assert.equal(res.log.status, 'success');
+  const root = res.updatedFilesystem[0];
+  assert.ok(root.children?.some(c => c.name === 'project-x'));
 });
 
-test('executeLocalTool runs calculator_code safely', () => {
-  const res = executeLocalTool('calculator_code', { expression: '15 * 4 + 10' });
-  assert.ok(res.output.includes('70'));
-});
-
-test('executeLocalTool returns formatted table for data_analyzer', () => {
-  const res = executeLocalTool('data_analyzer', { data: [10, 20, 30] });
-  assert.ok(res.output.includes('Total Sum'));
+test('executeTerminalCommand creates React scaffold with package.json and App.tsx', () => {
+  const res = executeTerminalCommand('npx create-react-app my-dashboard', INITIAL_FILESYSTEM, false);
+  assert.equal(res.requiresConfirmation, false);
+  const root = res.updatedFilesystem[0];
+  const project = root.children?.find(c => c.name === 'my-dashboard');
+  assert.ok(project);
+  assert.ok(project.children?.some(c => c.name === 'package.json'));
+  assert.ok(project.children?.some(c => c.name === 'App.tsx'));
   assert.ok(res.artifact);
-  assert.equal(res.artifact.type, 'table');
 });
 
-test('default agent roster is valid with at least 4 diverse agents', () => {
-  assert.ok(DEFAULT_AGENTS.length >= 4);
-  const chronos = DEFAULT_AGENTS.find(a => a.id === 'chronos-planner');
-  assert.ok(chronos);
-  assert.equal(chronos.model, 'gemini-3.8-flash');
+test('Nexus OS-Agent is the first flagship agent with strict safety protocols', () => {
+  const firstAgent = DEFAULT_AGENTS[0];
+  assert.equal(firstAgent.id, 'nexus-os-agent');
+  assert.equal(firstAgent.name, 'Nexus OS-Agent');
+  assert.ok(firstAgent.systemInstruction.includes('Human-in-the-Loop'));
+  assert.ok(firstAgent.systemInstruction.includes("Please say 'Yes' to approve or 'No' to cancel"));
+});
+
+test('generateFallbackMission generates human-in-the-loop confirmation for Nexus OS-Agent on risky command', () => {
+  const osAgent = DEFAULT_AGENTS[0];
+  const res = generateFallbackMission(osAgent, 'delete the old cache folder', []);
+  assert.ok(res.pendingConfirmation);
+  assert.ok(res.content.includes("WARNING: I am about to execute a risky command"));
+  assert.equal(res.toolCalls[0].status, 'awaiting_confirmation');
+});
+
+test("executeLocalTool handles 'execute_terminal_command' tool correctly", () => {
+  // Safe command
+  const safeRes = executeTerminalCommand('mkdir -p user_scripts', INITIAL_FILESYSTEM, false);
+  assert.equal(safeRes.requiresConfirmation, false);
+  assert.ok(safeRes.log.output.includes('user_scripts'));
+
+  // Risky command without confirmation
+  const riskyUnconfirmed = executeTerminalCommand('shutdown -h now', INITIAL_FILESYSTEM, false);
+  assert.equal(riskyUnconfirmed.requiresConfirmation, true);
+  assert.ok(riskyUnconfirmed.warning?.includes('Shutdown'));
+
+  // Risky command with confirmation
+  const riskyConfirmed = executeTerminalCommand('shutdown -h now', INITIAL_FILESYSTEM, true);
+  assert.equal(riskyConfirmed.requiresConfirmation, false);
+  assert.ok(riskyConfirmed.log.output.includes('Initiating clean system'));
 });

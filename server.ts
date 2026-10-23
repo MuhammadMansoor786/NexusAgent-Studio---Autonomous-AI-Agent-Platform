@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, FunctionDeclaration, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -12,11 +12,14 @@ import {
   extractArtifacts,
   extractPlan,
   executeLocalTool,
+  executeTerminalCommand,
+  isRiskyCommand,
   generateFallbackMission,
   DEFAULT_AGENTS,
   INITIAL_MEMORIES,
+  INITIAL_FILESYSTEM,
 } from './src/agent/agent-engine.ts';
-import { Agent, AgentArtifact, AgentMemory, AgentPlanStep, ToolCallRecord } from './src/types/agent.ts';
+import { Agent, AgentArtifact, AgentMemory, AgentPlanStep, ToolCallRecord, VirtualFileNode } from './src/types/agent.ts';
 
 dotenv.config();
 
@@ -49,6 +52,47 @@ app.get('/api/agent/status', (_req: Request, res: Response) => {
     agentsCount: DEFAULT_AGENTS.length,
     timestamp: Date.now(),
   });
+});
+
+// Gemini Function Tool Declaration for execute_terminal_command
+const executeTerminalCommandDeclaration: FunctionDeclaration = {
+  name: 'execute_terminal_command',
+  description: "Executes terminal commands on the local operating system to create files, manage folders, scaffold projects, or control system state. Risky commands (deletion, shutdown, restart, format) require explicit user confirmation.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      command: {
+        type: Type.STRING,
+        description: "The shell/terminal command to execute (e.g., 'mkdir project-alpha', 'touch app.py', 'shutdown -h now').",
+      },
+      isConfirmed: {
+        type: Type.BOOLEAN,
+        description: "Set to true only if the user has explicitly confirmed 'Yes' to execute a risky/destructive command.",
+      },
+    },
+    required: ['command'],
+  },
+};
+
+// Terminal execution endpoint
+app.post(['/api/agent/terminal', '/api/agent/execute_terminal_command'], (req: Request, res: Response) => {
+  try {
+    const { command, isConfirmed, filesystem = INITIAL_FILESYSTEM } = req.body;
+    const result = executeTerminalCommand(command || 'ls', filesystem, isConfirmed);
+    res.json({
+      success: true,
+      toolName: 'execute_terminal_command',
+      output: result.log.output,
+      log: result.log,
+      updatedFilesystem: result.updatedFilesystem,
+      requiresConfirmation: result.requiresConfirmation,
+      warning: result.warning,
+      commandName: result.commandName,
+      artifact: result.artifact,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Terminal execution failed' });
+  }
 });
 
 // Tool execution endpoint
@@ -90,6 +134,26 @@ app.post('/api/agent/run', async (req: Request, res: Response) => {
     if (!prompt || typeof prompt !== 'string') {
       res.status(400).json({ error: 'Prompt is required' });
       return;
+    }
+
+    // Strict Human-in-the-Loop check for Nexus OS-Agent
+    if (agent.id === 'nexus-os-agent') {
+      const riskCheck = isRiskyCommand(prompt);
+      if (riskCheck.isRisky) {
+        const fallbackResult = generateFallbackMission(agent, prompt, memories);
+        res.json({
+          success: true,
+          mode,
+          thoughts: fallbackResult.thoughts,
+          plan: fallbackResult.plan,
+          toolCalls: fallbackResult.toolCalls,
+          artifacts: fallbackResult.artifacts,
+          content: fallbackResult.content,
+          pendingConfirmation: fallbackResult.pendingConfirmation,
+          executionTimeMs: Date.now() - startTime,
+        });
+        return;
+      }
     }
 
     // Check if Gemini API is available
@@ -216,6 +280,7 @@ RESPONSE FORMAT RULES:
       toolCalls: fallbackResult.toolCalls,
       artifacts: fallbackResult.artifacts,
       content: fallbackResult.content,
+      pendingConfirmation: fallbackResult.pendingConfirmation,
       executionTimeMs: Date.now() - startTime,
       isSimulated: true,
     });

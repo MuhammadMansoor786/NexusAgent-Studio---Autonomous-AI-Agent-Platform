@@ -1,0 +1,6 @@
+{
+  "name": "NexusAgent Studio - Autonomous AI Agent Platform",
+  "description": "Autonomous multi-agent workspace with reasoning chains, dynamic task planning, tool execution, memory storage, and artifact generation powered by Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
